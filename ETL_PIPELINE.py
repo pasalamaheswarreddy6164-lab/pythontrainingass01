@@ -7,7 +7,6 @@ from snowflake.connector.pandas_tools import write_pandas
 
 load_dotenv()
 
-# Connect to DB
 con = snowflake.connector.connect(
     user=os.getenv("SF_USER"),
     password=os.getenv("SF_PASSWORD"),
@@ -30,7 +29,6 @@ d2 = pd.read_excel("data/employee.xlsx")
 d1["SOURCE"] = "CSV"
 d2["SOURCE"] = "EXCEL"
 
-# Merge raw data
 data = pd.concat([d1, d2], ignore_index=True)
 
 def fix_gen(x):
@@ -50,11 +48,9 @@ data["LOAD_TIMESTAMP"] = ts
 print("\n--- RAW DATA ---")
 print(data)
 
-# Split for join
 set_a = data[data["SOURCE"] == "CSV"]
 set_b = data[data["SOURCE"] == "EXCEL"]
 
-# Join on ID
 merged = pd.merge(
     set_a, 
     set_b, 
@@ -65,15 +61,12 @@ merged = pd.merge(
 
 print("\nIDs FOUND:", merged["USER_ID"].unique())
 
-# Calc Age
 bday = pd.to_datetime(merged["DOB_CSV"], format="%d-%m-%Y")
 now = pd.to_datetime(date.today())
 merged["AGE"] = (now - bday).dt.days // 365
 
-# Filter adults
 merged = merged[merged["AGE"] > 18]
 
-# Final output
 res = pd.DataFrame({
     "USER_ID": merged["USER_ID"],
     "NAME": merged["NAME_CSV"],
@@ -111,7 +104,6 @@ CREATE OR REPLACE TABLE FINAL_EMPLOYEE_DATA (
 )
 """)
 
-# Upload
 write_pandas(con, data, "RAW_EMPLOYEE_DATA")
 write_pandas(con, res, "FINAL_EMPLOYEE_DATA")
 
