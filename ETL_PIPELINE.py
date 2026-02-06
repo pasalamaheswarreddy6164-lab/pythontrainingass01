@@ -7,7 +7,8 @@ from snowflake.connector.pandas_tools import write_pandas
 
 load_dotenv()
 
-conn = snowflake.connector.connect(
+# Connect to DB
+con = snowflake.connector.connect(
     user=os.getenv("SF_USER"),
     password=os.getenv("SF_PASSWORD"),
     account=os.getenv("SF_ACCOUNT"),
@@ -17,73 +18,77 @@ conn = snowflake.connector.connect(
     role=os.getenv("SF_ROLE")
 )
 
-cursor = conn.cursor()
+cur = con.cursor()
 
-load_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")  #
+# Get current time
+ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+# Read files
+d1 = pd.read_csv("data/employee.csv")
+d2 = pd.read_excel("data/employee.xlsx")
 
-csv_df = pd.read_csv("data/source_data.csv")
-excel_df = pd.read_excel("data/source_data.xlsx")
+d1["SOURCE"] = "CSV"
+d2["SOURCE"] = "EXCEL"
 
-csv_df["SOURCE"] = "CSV"
-excel_df["SOURCE"] = "EXCEL"
+# Merge raw data
+data = pd.concat([d1, d2], ignore_index=True)
 
-raw_df = pd.concat([csv_df, excel_df], ignore_index=True)
-
-def standardize_gender(val):
-    val = str(val).lower().strip()
-    if val in ["male", "m"]:
+def fix_gen(x):
+    s = str(x).lower().strip()
+    if s in ["male", "m"]:
         return "M"
-    elif val in ["female", "f"]:
+    elif s in ["female", "f"]:
         return "F"
     else:
         return "O"
 
-raw_df["GENDER"] = raw_df["GENDER"].apply(standardize_gender)
+# Clean columns
+data["GENDER"] = data["GENDER"].apply(fix_gen)
+data["DOB"] = pd.to_datetime(data["DOB"], errors="coerce").dt.strftime("%d-%m-%Y")
+data["LOAD_TIMESTAMP"] = ts
 
-raw_df["DOB"] = pd.to_datetime(raw_df["DOB"], errors="coerce") \
-                  .dt.strftime("%d-%m-%Y")
+print("\n--- RAW DATA ---")
+print(data)
 
-raw_df["LOAD_TIMESTAMP"] = load_timestamp
+# Split for join
+set_a = data[data["SOURCE"] == "CSV"]
+set_b = data[data["SOURCE"] == "EXCEL"]
 
-print("\nRAW LAYER DATA")
-print(raw_df)
-
-csv_users = raw_df[raw_df["SOURCE"] == "CSV"]
-excel_users = raw_df[raw_df["SOURCE"] == "EXCEL"]
-
-joined_df = pd.merge(
-    csv_users,
-    excel_users,
-    on="USER_ID",
-    how="inner",
+# Join on ID
+merged = pd.merge(
+    set_a, 
+    set_b, 
+    on="USER_ID", 
+    how="inner", 
     suffixes=("_CSV", "_EXCEL")
 )
 
-print("\nJOINED USER_IDS:", joined_df["USER_ID"].unique())
+print("\nIDs FOUND:", merged["USER_ID"].unique())
 
+# Calc Age
+bday = pd.to_datetime(merged["DOB_CSV"], format="%d-%m-%Y")
+now = pd.to_datetime(date.today())
+merged["AGE"] = (now - bday).dt.days // 365
 
-dob = pd.to_datetime(joined_df["DOB_CSV"], format="%d-%m-%Y")
-today = pd.to_datetime(date.today())
-joined_df["AGE"] = (today - dob).dt.days // 365
+# Filter adults
+merged = merged[merged["AGE"] > 18]
 
-joined_df = joined_df[joined_df["AGE"] > 18]
-
-final_df = pd.DataFrame({
-    "USER_ID": joined_df["USER_ID"],
-    "NAME": joined_df["NAME_CSV"],
-    "GENDER": joined_df["GENDER_CSV"],
-    "DOB": joined_df["DOB_CSV"],
-    "CITY": joined_df["CITY_CSV"],
-    "AGE": joined_df["AGE"],
-    "LOAD_TIMESTAMP": load_timestamp
+# Final output
+res = pd.DataFrame({
+    "USER_ID": merged["USER_ID"],
+    "NAME": merged["NAME_CSV"],
+    "GENDER": merged["GENDER_CSV"],
+    "DOB": merged["DOB_CSV"],
+    "CITY": merged["CITY_CSV"],
+    "AGE": merged["AGE"],
+    "LOAD_TIMESTAMP": ts
 })
 
-print("\nFINAL LAYER DATA")
-print(final_df)
+print("\n--- FINAL DATA ---")
+print(res)
 
-cursor.execute("""
-CREATE OR REPLACE TABLE RAW_USER_DATA (
+cur.execute("""
+CREATE OR REPLACE TABLE RAW_EMPLOYEE_DATA (
     USER_ID INT,
     NAME STRING,
     GENDER STRING,
@@ -94,8 +99,8 @@ CREATE OR REPLACE TABLE RAW_USER_DATA (
 )
 """)
 
-cursor.execute("""
-CREATE OR REPLACE TABLE FINAL_USER_DATA (
+cur.execute("""
+CREATE OR REPLACE TABLE FINAL_EMPLOYEE_DATA (
     USER_ID INT,
     NAME STRING,
     GENDER STRING,
@@ -106,10 +111,11 @@ CREATE OR REPLACE TABLE FINAL_USER_DATA (
 )
 """)
 
-write_pandas(conn, raw_df, "RAW_USER_DATA")
-write_pandas(conn, final_df, "FINAL_USER_DATA")
+# Upload
+write_pandas(con, data, "RAW_EMPLOYEE_DATA")
+write_pandas(con, res, "FINAL_EMPLOYEE_DATA")
 
-print("\n ETL PIPELINE COMPLETED SUCCESSFULLY")
+print("\nDONE.")
 
-cursor.close()
-conn.close()
+cur.close()
+con.close()
